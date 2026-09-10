@@ -131,6 +131,14 @@
   }
   .org-modal-item:hover{border-color:var(--brand-yellow);background:#FFFCEE;}
   .org-modal-loading{font-size:13px;color:var(--ink-soft);text-align:center;padding:20px 0;margin:0;}
+
+  .org-modal-tabs{display:flex;gap:8px;margin-bottom:16px;}
+  .org-modal-tab{
+    flex:1;border:1.5px solid var(--line);background:var(--surface);color:var(--ink-soft);
+    font-family:'Inter';font-weight:600;font-size:12.5px;padding:9px 10px;border-radius:8px;cursor:pointer;
+  }
+  .org-modal-tab.active{border-color:var(--ink);color:var(--ink);background:var(--line-soft);}
+  .org-code-note{font-size:12px;color:var(--ink-soft);margin:0 0 12px;}
 </style>
 </head>
 <body>
@@ -183,10 +191,27 @@
       <h3>Acceso de organización</h3>
       <button class="modal-close" onclick="closeOrgPicker()">×</button>
     </div>
-    <p class="modal-hint">Ingresá el código que te pasó quien coordina la planilla para entrar directo a cargar tu propio diagnóstico.</p>
-    <input type="text" id="orgCodeInput" class="org-code-input" placeholder="Tu código de acceso" autocomplete="off">
-    <button class="org-code-submit" onclick="submitOrgCode()">Entrar →</button>
-    <p id="orgCodeError" class="org-code-error"></p>
+
+    <div class="org-modal-tabs">
+      <button type="button" class="org-modal-tab" id="tabLogin" onclick="switchOrgModalTab('login')">Ya tengo código</button>
+      <button type="button" class="org-modal-tab" id="tabRegister" onclick="switchOrgModalTab('register')">Primera vez</button>
+    </div>
+
+    <div id="orgLoginPanel">
+      <p class="modal-hint">Ingresá el código que te pasó quien coordina la planilla, o el que elegiste vos al registrarte, para entrar directo a cargar tu propio diagnóstico.</p>
+      <input type="text" id="orgCodeInput" class="org-code-input" placeholder="Tu código de acceso" autocomplete="off">
+      <button class="org-code-submit" onclick="submitOrgCode()">Entrar →</button>
+      <p id="orgCodeError" class="org-code-error"></p>
+    </div>
+
+    <div id="orgRegisterPanel">
+      <p class="modal-hint">Registrá tu organización y elegí tu propio código de acceso — no necesitás que nadie te pase un link.</p>
+      <input type="text" id="orgNameInput" class="org-code-input" placeholder="Nombre de tu organización" autocomplete="off">
+      <input type="text" id="orgNewCodeInput" class="org-code-input" placeholder="Elegí un código de acceso" autocomplete="off">
+      <p class="org-code-note">Guardalo: lo vas a necesitar para volver a entrar y seguir cargando tu diagnóstico más adelante.</p>
+      <button class="org-code-submit" onclick="submitOrgRegister()">Crear acceso →</button>
+      <p id="orgRegisterError" class="org-code-error"></p>
+    </div>
   </div>
 </div>
 
@@ -210,10 +235,22 @@
     document.getElementById('orgModalOverlay').classList.add('open');
     document.getElementById('orgCodeInput').value = '';
     document.getElementById('orgCodeError').textContent = '';
-    document.getElementById('orgCodeInput').focus();
+    document.getElementById('orgNameInput').value = '';
+    document.getElementById('orgNewCodeInput').value = '';
+    document.getElementById('orgRegisterError').textContent = '';
+    switchOrgModalTab('login');
   }
   function closeOrgPicker(){
     document.getElementById('orgModalOverlay').classList.remove('open');
+  }
+  function switchOrgModalTab(tab){
+    const isLogin = tab === 'login';
+    document.getElementById('tabLogin').classList.toggle('active', isLogin);
+    document.getElementById('tabRegister').classList.toggle('active', !isLogin);
+    document.getElementById('orgLoginPanel').hidden = !isLogin;
+    document.getElementById('orgRegisterPanel').hidden = isLogin;
+    const toFocus = isLogin ? document.getElementById('orgCodeInput') : document.getElementById('orgNameInput');
+    setTimeout(() => toFocus.focus(), 0);
   }
   async function submitOrgCode(){
     const input = document.getElementById('orgCodeInput');
@@ -232,9 +269,45 @@
       errorEl.textContent = 'Ese código no corresponde a ninguna organización.';
     }
   }
+  async function submitOrgRegister(){
+    const nameInput = document.getElementById('orgNameInput');
+    const codeInput = document.getElementById('orgNewCodeInput');
+    const errorEl = document.getElementById('orgRegisterError');
+    const name = nameInput.value.trim();
+    const code = codeInput.value.trim();
+    if (!name){ errorEl.textContent = 'Ingresá el nombre de tu organización.'; return; }
+    if (code.length < 4){ errorEl.textContent = 'Elegí un código de al menos 4 caracteres.'; return; }
+
+    errorEl.textContent = 'Creando acceso...';
+    try{
+      const { data: existing } = await sb.from('sincretismo_nomina').select('org_index').eq('access_token', code).maybeSingle();
+      if (existing){ errorEl.textContent = 'Ese código ya está en uso, elegí otro.'; return; }
+
+      let nextIndex = 0;
+      const { data: maxRow } = await sb.from('sincretismo_nomina').select('org_index').order('org_index', { ascending: false }).limit(1).maybeSingle();
+      if (maxRow) nextIndex = maxRow.org_index + 1;
+
+      for (let attempt = 0; attempt < 5; attempt++){
+        const { error } = await sb.from('sincretismo_nomina').insert({ org_index: nextIndex, org_name: name, access_token: code });
+        if (!error){
+          window.location.href = `diagnostico.html?org=${nextIndex}&token=${code}`;
+          return;
+        }
+        nextIndex += 1; // probablemente ya existía ese índice (otra organización se registró al mismo tiempo), se reintenta con el siguiente
+      }
+      errorEl.textContent = 'No se pudo crear el acceso, probá de nuevo.';
+    }catch(e){
+      errorEl.textContent = 'No se pudo crear el acceso, probá de nuevo.';
+    }
+  }
   document.addEventListener('DOMContentLoaded', () => {
     const inp = document.getElementById('orgCodeInput');
     if (inp) inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitOrgCode(); });
+    const nameInp = document.getElementById('orgNameInput');
+    const newCodeInp = document.getElementById('orgNewCodeInput');
+    [nameInp, newCodeInp].forEach(el => {
+      if (el) el.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitOrgRegister(); });
+    });
   });
 </script>
 </body>

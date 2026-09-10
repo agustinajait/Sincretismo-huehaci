@@ -11,9 +11,14 @@ equipo, servicios/infraestructura y diagnóstico institucional (con adjuntos).
   - **Admin** (🔐 en la barra superior): pide una contraseña y, si es correcta,
     redirige a `diagnostico.html?admin=TOKEN` con el token de administrador
     hardcodeado en el propio `index.html`.
-  - **Organización** ("Hacer tu diagnóstico"): pide un código de acceso propio
-    de cada organización, lo valida contra Supabase y redirige a
-    `diagnostico.html?org=N&token=X`.
+  - **Organización** ("Hacer tu diagnóstico"): abre un modal con dos pestañas.
+    - *Ya tengo código*: valida el código contra Supabase y redirige a
+      `diagnostico.html?org=N&token=X`.
+    - *Primera vez*: la organización se registra sola — elige su nombre y su
+      propio código de acceso, sin que nadie tenga que pasarle un link. El
+      código queda guardado como `access_token` de su fila en Supabase, así
+      que sirve también para volver a entrar más adelante desde la pestaña
+      *Ya tengo código*.
 - `diagnostico.html` — la herramienta en sí: tablas, formularios y sincronización
   en vivo vía Supabase (Realtime + polling de respaldo). Lee los parámetros de
   la URL (`?admin=` o `?org=&token=`) para decidir qué organización(es) mostrar
@@ -35,8 +40,15 @@ las librerías externas (Supabase JS, SheetJS) desde CDN.
 La clave usada en el cliente es la **publishable key** de Supabase (segura para
 exponer en el frontend); el control de acceso real de cada organización lo da
 el `access_token` propio guardado en la tabla, no la clave de Supabase. El
-token de administrador y los tokens por organización están hardcodeados en el
-código de `index.html` / `diagnostico.html`.
+token de administrador está hardcodeado en el código; los tokens por
+organización se generan al crear cada fila (desde el panel de admin, o desde
+el registro propio en `index.html`) y quedan guardados en `access_token`.
+
+La tabla `sincretismo_nomina` tiene RLS habilitado con políticas públicas de
+`SELECT`/`INSERT`/`UPDATE` (sin auth de por medio) — el acceso no lo resuelve
+Postgres sino el `access_token` que valida el frontend. Es lo que permite que
+una organización se registre sola desde `index.html` sin pasar por el panel
+de admin.
 
 ## Despliegue (Netlify vía Git)
 
