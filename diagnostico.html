@@ -176,6 +176,14 @@
   .adjunto-size{font-size:11.5px;color:var(--ink-soft);font-family:'IBM Plex Mono';white-space:nowrap;}
   .adjunto-input{display:none;}
   .adjunto-upload-btn{display:inline-block;cursor:pointer;}
+  .cv-cell{display:flex;align-items:center;gap:6px;white-space:nowrap;}
+  .cv-link{font-size:12.5px;font-weight:600;color:var(--ink);text-decoration:none;max-width:110px;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle;}
+  .cv-link:hover{text-decoration:underline;}
+  .cv-upload-btn{
+    display:inline-block;cursor:pointer;font-size:12px;padding:6px 10px;
+    border:1px dashed var(--ink-soft);border-radius:6px;color:var(--ink-soft);white-space:nowrap;
+  }
+  .cv-upload-btn:hover{border-color:var(--ink);color:var(--ink);background:var(--line-soft);}
   table.general-table{min-width:0;}
   table.general-table th:first-child, table.general-table td:first-child{min-width:220px;}
 
@@ -368,6 +376,7 @@ const DOC_ITEMS = ['Estatuto','Libro de actas','Registro de socios/voluntarios',
 function blankRow(){
   const r = {};
   COLUMNS.forEach(c => r[c.key] = '');
+  r.cv = null; // { name, path, url, size, uploadedAt } — CV adjunto del colaborador
   return r;
 }
 
@@ -484,6 +493,7 @@ async function deleteOrg(index){
   if (!ok) return;
   try{
     const paths = ((org.diagnostico && org.diagnostico.adjuntos) || []).map(a => a.path).filter(Boolean);
+    (org.rows || []).forEach(r => { if (r.cv && r.cv.path) paths.push(r.cv.path); });
     if (paths.length) await sb.storage.from(ADJUNTOS_BUCKET).remove(paths);
     const { error } = await sb.from(TABLE).delete().eq('org_index', index);
     if (error){ alert('No se pudo borrar la organización.'); return; }
@@ -731,6 +741,7 @@ function renderOrgPanel(org){
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
   COLUMNS.forEach(col => { const th = document.createElement('th'); th.textContent = col.label; trh.appendChild(th); });
+  const thCv = document.createElement('th'); thCv.textContent = 'CV'; trh.appendChild(thCv);
   trh.appendChild(document.createElement('th'));
   thead.appendChild(trh);
   table.appendChild(thead);
@@ -773,13 +784,68 @@ function renderOrgPanel(org){
       }
       tr.appendChild(td);
     });
+
+    const tdCv = document.createElement('td');
+    tdCv.className = 'cv-cell';
+    if (row.cv && row.cv.url){
+      const link = document.createElement('a');
+      link.href = row.cv.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.className = 'cv-link';
+      link.textContent = row.cv.name || 'CV';
+      link.title = row.cv.name || 'CV';
+      tdCv.appendChild(link);
+      if (editable){
+        const rmCv = document.createElement('button');
+        rmCv.className = 'rm-btn';
+        rmCv.textContent = '×';
+        rmCv.title = 'Quitar CV';
+        rmCv.onclick = async () => {
+          await removeAdjunto(row.cv.path);
+          row.cv = null;
+          saveOrgToStorage(org.index);
+          renderAll();
+        };
+        tdCv.appendChild(rmCv);
+      }
+    } else if (editable){
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = '.pdf,.doc,.docx';
+      fileInput.className = 'adjunto-input';
+      const uploadLabel = document.createElement('label');
+      uploadLabel.className = 'cv-upload-btn';
+      uploadLabel.textContent = '+ CV';
+      uploadLabel.appendChild(fileInput);
+      fileInput.onchange = async (e) => {
+        const file = e.target.files && e.target.files[0];
+        if (!file) return;
+        uploadLabel.textContent = 'Subiendo...';
+        const meta = await uploadAdjunto(org.index, file);
+        if (meta){ row.cv = meta; saveOrgToStorage(org.index); renderAll(); }
+        else { uploadLabel.textContent = '+ CV'; alert('No se pudo subir el CV.'); }
+      };
+      tdCv.appendChild(uploadLabel);
+    } else {
+      tdCv.textContent = '—';
+    }
+    tr.appendChild(tdCv);
+
     const tdRm = document.createElement('td');
     const rm = document.createElement('button');
     rm.className = 'rm-btn';
     rm.textContent = '×';
     rm.title = 'Quitar fila';
     rm.disabled = !editable;
-    rm.onclick = () => { if(!editable) return; org.rows.splice(ri,1); if(org.rows.length===0) org.rows.push(blankRow()); saveOrgToStorage(org.index); renderAll(); };
+    rm.onclick = () => {
+      if(!editable) return;
+      if (row.cv && row.cv.path) removeAdjunto(row.cv.path);
+      org.rows.splice(ri,1);
+      if(org.rows.length===0) org.rows.push(blankRow());
+      saveOrgToStorage(org.index);
+      renderAll();
+    };
     tdRm.appendChild(rm);
     tr.appendChild(tdRm);
     tbody.appendChild(tr);
@@ -1573,7 +1639,7 @@ function renderSummaryPanel(){
   const table = document.createElement('table');
   const thead = document.createElement('thead');
   const trh = document.createElement('tr');
-  ['Organización', ...COLUMNS.map(c=>c.label)].forEach(l => {
+  ['Organización', ...COLUMNS.map(c=>c.label), 'CV'].forEach(l => {
     const th = document.createElement('th'); th.textContent = l; trh.appendChild(th);
   });
   thead.appendChild(trh);
@@ -1582,7 +1648,7 @@ function renderSummaryPanel(){
   if (allRows.length === 0) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = COLUMNS.length + 1;
+    td.colSpan = COLUMNS.length + 2;
     td.className = 'empty-row';
     td.textContent = 'Todavía no se cargaron colaboradores.';
     tr.appendChild(td); tbody.appendChild(tr);
@@ -1599,6 +1665,16 @@ function renderSummaryPanel(){
       tdOrg.appendChild(pill);
       tr.appendChild(tdOrg);
       COLUMNS.forEach(col => { const td = document.createElement('td'); td.textContent = r[col.key] || '—'; tr.appendChild(td); });
+      const tdCv = document.createElement('td');
+      if (r.cv && r.cv.url){
+        const link = document.createElement('a');
+        link.href = r.cv.url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+        link.className = 'cv-link'; link.textContent = r.cv.name || 'CV'; link.title = r.cv.name || 'CV';
+        tdCv.appendChild(link);
+      } else {
+        tdCv.textContent = '—';
+      }
+      tr.appendChild(tdCv);
       tbody.appendChild(tr);
     });
   }
@@ -1718,7 +1794,7 @@ function exportExcel(){
   const usedNames = new Set();
   state.orgs.forEach(org => {
     const rows = org.rows.filter(r => (r.nombre||'').trim() !== '');
-    const data = [XLSX_HEADERS, ...rows.map(r => COLUMNS.map(c => r[c.key] || ''))];
+    const data = [[...XLSX_HEADERS, 'CV'], ...rows.map(r => [...COLUMNS.map(c => r[c.key] || ''), (r.cv && r.cv.url) || ''])];
     const ws = XLSX.utils.aoa_to_sheet(data);
     let sheetName = (org.name || `Organización ${org.index+1}`).substring(0,31);
     let suffix = 1;
@@ -1728,9 +1804,9 @@ function exportExcel(){
   });
   const allRows = [];
   state.orgs.forEach(org => {
-    org.rows.filter(r => (r.nombre||'').trim() !== '').forEach(r => allRows.push([org.name, ...COLUMNS.map(c => r[c.key] || '')]));
+    org.rows.filter(r => (r.nombre||'').trim() !== '').forEach(r => allRows.push([org.name, ...COLUMNS.map(c => r[c.key] || ''), (r.cv && r.cv.url) || '']));
   });
-  const summaryData = [['ORGANIZACIÓN', ...XLSX_HEADERS], ...allRows];
+  const summaryData = [['ORGANIZACIÓN', ...XLSX_HEADERS, 'CV'], ...allRows];
   const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
   XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumen');
 
