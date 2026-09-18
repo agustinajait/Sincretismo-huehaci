@@ -184,6 +184,14 @@
     border:1px dashed var(--ink-soft);border-radius:6px;color:var(--ink-soft);white-space:nowrap;
   }
   .cv-upload-btn:hover{border-color:var(--ink);color:var(--ink);background:var(--line-soft);}
+  .proyecto-card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:22px;}
+  .proyecto-head{display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap;}
+  .proyecto-name-input{
+    flex:1;min-width:200px;border:none;border-bottom:2px solid var(--line);background:transparent;
+    font-family:'Fraunces',serif;font-weight:600;font-size:20px;padding:4px 2px;color:var(--ink);
+  }
+  .proyecto-name-input:focus{outline:none;border-bottom-color:var(--ink);}
+  .proyecto-name-input:disabled{color:var(--ink-soft);}
   table.general-table{min-width:0;}
   table.general-table th:first-child, table.general-table td:first-child{min-width:220px;}
 
@@ -409,10 +417,17 @@ function blankDiagnostico(){
   };
 }
 
+function blankProyecto(){
+  return { nombre: '', rows: [blankRow()] };
+}
+function normalizeProyectos(val){
+  return Array.isArray(val) ? val : [];
+}
+
 const state = {
   mode: 'denied', // 'admin' | 'org' | 'denied'
   activeTab: 'summary',
-  subTab: 'detalle', // 'detalle' | 'general' — vista dentro de la pestaña de cada organización
+  subTab: 'detalle', // 'detalle' | 'general' | 'servicios' | 'diagnostico' | 'proyectos' — vista dentro de la pestaña de cada organización
   myOrg: null, // null = viewer, org_index = editing that org
   orgs: [] // { index, name, rows, general }
 };
@@ -423,7 +438,7 @@ function findOrg(index){ return state.orgs.find(o => o.index === index); }
 
 async function loadAllOrgs(){
   try{
-    const { data, error } = await sb.from(TABLE).select('org_index, org_name, rows, general, servicios, diagnostico, access_token').order('org_index', { ascending: true });
+    const { data, error } = await sb.from(TABLE).select('org_index, org_name, rows, general, servicios, diagnostico, proyectos, access_token').order('org_index', { ascending: true });
     if (!error && data){
       state.orgs = data.map(row => ({
         index: row.org_index,
@@ -432,6 +447,7 @@ async function loadAllOrgs(){
         general: (row.general && row.general.length) ? row.general : blankGeneral(),
         servicios: (row.servicios && Object.keys(row.servicios).length) ? { ...blankServicios(), ...row.servicios } : blankServicios(),
         diagnostico: (row.diagnostico && Object.keys(row.diagnostico).length) ? { ...blankDiagnostico(), ...row.diagnostico } : blankDiagnostico(),
+        proyectos: normalizeProyectos(row.proyectos),
         accessToken: row.access_token
       }));
     }
@@ -439,7 +455,7 @@ async function loadAllOrgs(){
     // si falla, se sigue con lo que ya haya en memoria
   }
   if (state.orgs.length === 0){
-    state.orgs = [0,1,2].map(i => ({ index:i, name:`Organización ${i+1}`, rows:[blankRow()], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico() }));
+    state.orgs = [0,1,2].map(i => ({ index:i, name:`Organización ${i+1}`, rows:[blankRow()], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), proyectos: [] }));
   }
 }
 
@@ -455,6 +471,7 @@ function saveOrgToStorage(index){
         general: org.general,
         servicios: org.servicios,
         diagnostico: org.diagnostico,
+        proyectos: org.proyectos,
         updated_at: new Date().toISOString()
       }).eq('org_index', index);
       setSyncText(error ? 'no se pudo sincronizar' : 'sincronizado ✓');
@@ -470,9 +487,9 @@ async function addNewOrg(){
   const newToken = randomToken();
   for (let attempt = 0; attempt < 5; attempt++){
     try{
-      const { error } = await sb.from(TABLE).insert({ org_index: nextIndex, org_name: name, rows: [], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), access_token: newToken });
+      const { error } = await sb.from(TABLE).insert({ org_index: nextIndex, org_name: name, rows: [], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), proyectos: [], access_token: newToken });
       if (!error){
-        state.orgs.push({ index: nextIndex, name, rows: [blankRow()], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), accessToken: newToken });
+        state.orgs.push({ index: nextIndex, name, rows: [blankRow()], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), proyectos: [], accessToken: newToken });
         state.myOrg = nextIndex;
         state.activeTab = String(nextIndex);
         renderAll();
@@ -494,6 +511,7 @@ async function deleteOrg(index){
   try{
     const paths = ((org.diagnostico && org.diagnostico.adjuntos) || []).map(a => a.path).filter(Boolean);
     (org.rows || []).forEach(r => { if (r.cv && r.cv.path) paths.push(r.cv.path); });
+    (org.proyectos || []).forEach(p => (p.rows || []).forEach(r => { if (r.cv && r.cv.path) paths.push(r.cv.path); }));
     if (paths.length) await sb.storage.from(ADJUNTOS_BUCKET).remove(paths);
     const { error } = await sb.from(TABLE).delete().eq('org_index', index);
     if (error){ alert('No se pudo borrar la organización.'); return; }
@@ -511,12 +529,13 @@ function subscribeRealtime(){
       const idx = payload.new.org_index;
       if (idx === state.myOrg) return; // no pisar lo que estoy escribiendo yo
       let org = findOrg(idx);
-      if (!org){ org = { index: idx, name:'', rows:[], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico() }; state.orgs.push(org); state.orgs.sort((a,b)=>a.index-b.index); }
+      if (!org){ org = { index: idx, name:'', rows:[], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), proyectos: [] }; state.orgs.push(org); state.orgs.sort((a,b)=>a.index-b.index); }
       org.name = payload.new.org_name || `Organización ${idx + 1}`;
       org.rows = (payload.new.rows && payload.new.rows.length) ? payload.new.rows : [blankRow()];
       org.general = (payload.new.general && payload.new.general.length) ? payload.new.general : blankGeneral();
       org.servicios = (payload.new.servicios && Object.keys(payload.new.servicios).length) ? { ...blankServicios(), ...payload.new.servicios } : blankServicios();
       org.diagnostico = (payload.new.diagnostico && Object.keys(payload.new.diagnostico).length) ? { ...blankDiagnostico(), ...payload.new.diagnostico } : blankDiagnostico();
+      org.proyectos = normalizeProyectos(payload.new.proyectos);
       renderBackgroundSync();
     })
     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: TABLE }, (payload) => {
@@ -528,7 +547,8 @@ function subscribeRealtime(){
         rows: (payload.new.rows && payload.new.rows.length) ? payload.new.rows : [blankRow()],
         general: (payload.new.general && payload.new.general.length) ? payload.new.general : blankGeneral(),
         servicios: (payload.new.servicios && Object.keys(payload.new.servicios).length) ? { ...blankServicios(), ...payload.new.servicios } : blankServicios(),
-        diagnostico: (payload.new.diagnostico && Object.keys(payload.new.diagnostico).length) ? { ...blankDiagnostico(), ...payload.new.diagnostico } : blankDiagnostico()
+        diagnostico: (payload.new.diagnostico && Object.keys(payload.new.diagnostico).length) ? { ...blankDiagnostico(), ...payload.new.diagnostico } : blankDiagnostico(),
+        proyectos: normalizeProyectos(payload.new.proyectos)
       });
       state.orgs.sort((a,b)=>a.index-b.index);
       renderBackgroundSync();
@@ -543,17 +563,18 @@ function setSyncText(t){
 
 async function pollOthers(){
   try{
-    const { data, error } = await sb.from(TABLE).select('org_index, org_name, rows, general, servicios, diagnostico').order('org_index', { ascending: true });
+    const { data, error } = await sb.from(TABLE).select('org_index, org_name, rows, general, servicios, diagnostico, proyectos').order('org_index', { ascending: true });
     if (!error && data){
       data.forEach(row => {
         if (row.org_index === state.myOrg) return; // no pisar lo que estoy escribiendo yo
         let org = findOrg(row.org_index);
-        if (!org){ org = { index: row.org_index, name:'', rows:[], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico() }; state.orgs.push(org); }
+        if (!org){ org = { index: row.org_index, name:'', rows:[], general: blankGeneral(), servicios: blankServicios(), diagnostico: blankDiagnostico(), proyectos: [] }; state.orgs.push(org); }
         org.name = row.org_name || `Organización ${row.org_index + 1}`;
         org.rows = (row.rows && row.rows.length) ? row.rows : [blankRow()];
         org.general = (row.general && row.general.length) ? row.general : blankGeneral();
         org.servicios = (row.servicios && Object.keys(row.servicios).length) ? { ...blankServicios(), ...row.servicios } : blankServicios();
         org.diagnostico = (row.diagnostico && Object.keys(row.diagnostico).length) ? { ...blankDiagnostico(), ...row.diagnostico } : blankDiagnostico();
+        org.proyectos = normalizeProyectos(row.proyectos);
       });
       state.orgs.sort((a,b)=>a.index-b.index);
     }
@@ -710,10 +731,15 @@ function renderOrgPanel(org){
   diagBtn.className = 'subtab-btn' + (state.subTab === 'diagnostico' ? ' active' : '');
   diagBtn.textContent = 'Diagnóstico institucional';
   diagBtn.onclick = () => { state.subTab = 'diagnostico'; renderAll(); };
+  const proyectosBtn = document.createElement('button');
+  proyectosBtn.className = 'subtab-btn' + (state.subTab === 'proyectos' ? ' active' : '');
+  proyectosBtn.textContent = 'Proyectos aparte';
+  proyectosBtn.onclick = () => { state.subTab = 'proyectos'; renderAll(); };
   subTabs.appendChild(detalleBtn);
   subTabs.appendChild(generalBtn);
   subTabs.appendChild(serviciosBtn);
   subTabs.appendChild(diagBtn);
+  subTabs.appendChild(proyectosBtn);
   div.appendChild(subTabs);
 
   if (state.subTab === 'general'){
@@ -728,12 +754,35 @@ function renderOrgPanel(org){
     div.appendChild(renderDiagnosticoPanel(org, editable, c));
     return div;
   }
+  if (state.subTab === 'proyectos'){
+    div.appendChild(renderProyectosPanel(org, editable, c));
+    return div;
+  }
 
   const scrollHint = document.createElement('p');
   scrollHint.className = 'scroll-hint';
   scrollHint.textContent = '↔ Desliza la tabla hacia los costados para ver todas las columnas';
   div.appendChild(scrollHint);
 
+  const nominaTable = renderNominaTable(org.rows, editable, org.index, (kind, colKey) => {
+    saveOrgToStorage(org.index);
+    if (kind === 'value'){
+      if (colKey === 'nombre') { renderTabs(); renderConverge(); }
+      if (colKey === 'pagos') renderConverge();
+      renderSummaryIfActive();
+    } else {
+      renderAll();
+    }
+  });
+  div.appendChild(nominaTable);
+  return div;
+}
+
+// Tabla de nómina reutilizable: se usa tanto para la nómina principal (org.rows) como
+// para cada proyecto aparte (proyecto.rows). onMutate(kind, colKey) se llama después de
+// cada cambio — kind es 'value' (texto/select, no requiere rehacer el DOM) o 'remove'/'cv'
+// (sí requiere volver a renderizar).
+function renderNominaTable(rows, editable, orgIndex, onMutate){
   const scroll = document.createElement('div');
   scroll.className = 'table-scroll';
   const table = document.createElement('table');
@@ -747,7 +796,7 @@ function renderOrgPanel(org){
   table.appendChild(thead);
 
   const tbody = document.createElement('tbody');
-  org.rows.forEach((row, ri) => {
+  rows.forEach((row, ri) => {
     const tr = document.createElement('tr');
     COLUMNS.forEach(col => {
       const td = document.createElement('td');
@@ -764,7 +813,7 @@ function renderOrgPanel(org){
           if (row[col.key] === o) opt.selected = true;
           sel.appendChild(opt);
         });
-        sel.onchange = (e) => { row[col.key] = e.target.value; saveOrgToStorage(org.index); renderTabs(); renderConverge(); renderSummaryIfActive(); };
+        sel.onchange = (e) => { row[col.key] = e.target.value; onMutate('value', col.key); };
         td.appendChild(sel);
       } else {
         const inp = document.createElement('input');
@@ -773,13 +822,7 @@ function renderOrgPanel(org){
         inp.value = row[col.key];
         inp.disabled = !editable;
         inp.placeholder = col.type === 'number' ? '0' : '';
-        inp.oninput = (e) => {
-          row[col.key] = e.target.value;
-          saveOrgToStorage(org.index);
-          if (col.key === 'nombre') { renderTabs(); renderConverge(); }
-          if (col.key === 'pagos') renderConverge();
-          renderSummaryIfActive();
-        };
+        inp.oninput = (e) => { row[col.key] = e.target.value; onMutate('value', col.key); };
         td.appendChild(inp);
       }
       tr.appendChild(td);
@@ -804,8 +847,7 @@ function renderOrgPanel(org){
         rmCv.onclick = async () => {
           await removeAdjunto(row.cv.path);
           row.cv = null;
-          saveOrgToStorage(org.index);
-          renderAll();
+          onMutate('cv');
         };
         tdCv.appendChild(rmCv);
       }
@@ -822,8 +864,8 @@ function renderOrgPanel(org){
         const file = e.target.files && e.target.files[0];
         if (!file) return;
         uploadLabel.textContent = 'Subiendo...';
-        const meta = await uploadAdjunto(org.index, file);
-        if (meta){ row.cv = meta; saveOrgToStorage(org.index); renderAll(); }
+        const meta = await uploadAdjunto(orgIndex, file);
+        if (meta){ row.cv = meta; onMutate('cv'); }
         else { uploadLabel.textContent = '+ CV'; alert('No se pudo subir el CV.'); }
       };
       tdCv.appendChild(uploadLabel);
@@ -841,10 +883,9 @@ function renderOrgPanel(org){
     rm.onclick = () => {
       if(!editable) return;
       if (row.cv && row.cv.path) removeAdjunto(row.cv.path);
-      org.rows.splice(ri,1);
-      if(org.rows.length===0) org.rows.push(blankRow());
-      saveOrgToStorage(org.index);
-      renderAll();
+      rows.splice(ri,1);
+      if(rows.length===0) rows.push(blankRow());
+      onMutate('remove');
     };
     tdRm.appendChild(rm);
     tr.appendChild(tdRm);
@@ -852,8 +893,91 @@ function renderOrgPanel(org){
   });
   table.appendChild(tbody);
   scroll.appendChild(table);
-  div.appendChild(scroll);
-  return div;
+  return scroll;
+}
+
+function renderProyectosPanel(org, editable, c){
+  const wrap = document.createElement('div');
+
+  const hint = document.createElement('p');
+  hint.className = 'general-hint';
+  hint.textContent = 'Para cargar la nómina de un proyecto aparte del principal — no se mezcla con el resumen ni con la convergencia general.';
+  wrap.appendChild(hint);
+
+  if (!org.proyectos) org.proyectos = [];
+
+  org.proyectos.forEach((proyecto, pi) => {
+    const card = document.createElement('div');
+    card.className = 'proyecto-card';
+
+    const headRow = document.createElement('div');
+    headRow.className = 'proyecto-head';
+    const nameInput = document.createElement('input');
+    nameInput.className = 'proyecto-name-input';
+    nameInput.value = proyecto.nombre;
+    nameInput.placeholder = 'Nombre del proyecto';
+    nameInput.disabled = !editable;
+    nameInput.oninput = (e) => { proyecto.nombre = e.target.value; saveOrgToStorage(org.index); };
+    headRow.appendChild(nameInput);
+
+    const addRowBtn = document.createElement('button');
+    addRowBtn.className = 'add-row-btn';
+    addRowBtn.textContent = '+ Agregar colaborador';
+    addRowBtn.disabled = !editable;
+    addRowBtn.onclick = () => { if(!editable) return; proyecto.rows.push(blankRow()); saveOrgToStorage(org.index); renderAll(); };
+    headRow.appendChild(addRowBtn);
+
+    if (editable){
+      const delBtn = document.createElement('button');
+      delBtn.className = 'delete-org-btn';
+      delBtn.textContent = 'Borrar proyecto';
+      delBtn.onclick = async () => {
+        const ok = confirm(`¿Borrar el proyecto "${proyecto.nombre || 'sin nombre'}" y toda su nómina? No se puede deshacer.`);
+        if (!ok) return;
+        const paths = (proyecto.rows || []).map(r => r.cv && r.cv.path).filter(Boolean);
+        if (paths.length) await sb.storage.from(ADJUNTOS_BUCKET).remove(paths);
+        org.proyectos.splice(pi,1);
+        saveOrgToStorage(org.index);
+        renderAll();
+      };
+      headRow.appendChild(delBtn);
+    }
+    card.appendChild(headRow);
+
+    const scrollHint = document.createElement('p');
+    scrollHint.className = 'scroll-hint';
+    scrollHint.textContent = '↔ Desliza la tabla hacia los costados para ver todas las columnas';
+    card.appendChild(scrollHint);
+
+    const table = renderNominaTable(proyecto.rows, editable, org.index, (kind) => {
+      saveOrgToStorage(org.index);
+      if (kind !== 'value') renderAll();
+    });
+    card.appendChild(table);
+
+    wrap.appendChild(card);
+  });
+
+  if (org.proyectos.length === 0){
+    const empty = document.createElement('p');
+    empty.className = 'general-hint';
+    empty.textContent = 'Todavía no se cargó ningún proyecto aparte.';
+    wrap.appendChild(empty);
+  }
+
+  if (editable){
+    const addProyectoBtn = document.createElement('button');
+    addProyectoBtn.className = 'add-row-btn';
+    addProyectoBtn.textContent = '+ Nuevo proyecto';
+    addProyectoBtn.onclick = () => {
+      org.proyectos.push(blankProyecto());
+      saveOrgToStorage(org.index);
+      renderAll();
+    };
+    wrap.appendChild(addProyectoBtn);
+  }
+
+  return wrap;
 }
 
 function renderGeneralTable(org, editable, c){
@@ -1826,6 +1950,20 @@ function exportExcel(){
     XLSX.utils.book_append_sheet(wb, wsGeneral, 'Equipo general');
   }
 
+  const proyectosRows = [];
+  state.orgs.forEach(org => {
+    (org.proyectos || []).forEach(p => {
+      (p.rows || []).filter(r => (r.nombre||'').trim() !== '').forEach(r => {
+        proyectosRows.push([org.name, p.nombre || '(sin nombre)', ...COLUMNS.map(col => r[col.key] || ''), (r.cv && r.cv.url) || '']);
+      });
+    });
+  });
+  if (proyectosRows.length){
+    const proyectosData = [['ORGANIZACIÓN','PROYECTO', ...XLSX_HEADERS, 'CV'], ...proyectosRows];
+    const wsProyectos = XLSX.utils.aoa_to_sheet(proyectosData);
+    XLSX.utils.book_append_sheet(wb, wsProyectos, 'Proyectos aparte');
+  }
+
   const servExportRows = [];
   state.orgs.forEach(org => {
     const s = org.servicios;
@@ -1878,7 +2016,7 @@ function exportExcel(){
 async function loadSingleOrg(index, token){
   try{
     const { data, error } = await sb.from(TABLE)
-      .select('org_index, org_name, rows, general, servicios, diagnostico, access_token')
+      .select('org_index, org_name, rows, general, servicios, diagnostico, proyectos, access_token')
       .eq('org_index', index)
       .single();
     if (error || !data || data.access_token !== token) return null;
@@ -1888,7 +2026,8 @@ async function loadSingleOrg(index, token){
       rows: (data.rows && data.rows.length) ? data.rows : [blankRow()],
       general: (data.general && data.general.length) ? data.general : blankGeneral(),
       servicios: (data.servicios && Object.keys(data.servicios).length) ? { ...blankServicios(), ...data.servicios } : blankServicios(),
-      diagnostico: (data.diagnostico && Object.keys(data.diagnostico).length) ? { ...blankDiagnostico(), ...data.diagnostico } : blankDiagnostico()
+      diagnostico: (data.diagnostico && Object.keys(data.diagnostico).length) ? { ...blankDiagnostico(), ...data.diagnostico } : blankDiagnostico(),
+      proyectos: normalizeProyectos(data.proyectos)
     };
   }catch(e){
     return null;
